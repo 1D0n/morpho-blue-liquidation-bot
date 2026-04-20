@@ -6,6 +6,7 @@ export type LiquidityVenueName =
   | "erc4626"
   | "liquidSwap"
   | "midas"
+  | "odos"
   | "pendlePT"
   | "uniswapV3"
   | "uniswapV4";

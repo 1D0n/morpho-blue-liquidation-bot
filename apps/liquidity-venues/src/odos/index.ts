@@ -1,0 +1,100 @@
+import {
+  ODOS_API_BASE_URL,
+  ODOS_SLIPPAGE_PERCENT,
+  ODOS_SUPPORTED_NETWORKS,
+} from "@morpho-blue-liquidation-bot/config";
+import { ExecutorEncoder } from "executooor-viem";
+import { Address } from "viem";
+
+import { LiquidityVenue } from "../liquidityVenue";
+import { ToConvert } from "../types";
+
+import { AssembleRequest, AssembleResponse, QuoteRequest, QuoteResponse } from "./types";
+
+export class Odos implements LiquidityVenue {
+  private apiKey: string | undefined;
+
+  constructor() {
+    this.apiKey = process.env.ODOS_API_KEY;
+  }
+
+  supportsRoute(encoder: ExecutorEncoder, src: Address, dst: Address) {
+    if (src === dst) return false;
+    return ODOS_SUPPORTED_NETWORKS.includes(encoder.client.chain.id);
+  }
+
+  async convert(encoder: ExecutorEncoder, toConvert: ToConvert) {
+    try {
+      const quote = await this.fetchQuote({
+        chainId: encoder.client.chain.id,
+        src: toConvert.src,
+        dst: toConvert.dst,
+        amount: toConvert.srcAmount,
+        userAddr: encoder.address,
+      });
+
+      const assembled = await this.fetchAssemble({
+        pathId: quote.pathId,
+        userAddr: encoder.address,
+      });
+
+      encoder
+        .erc20Approve(toConvert.src, assembled.transaction.to, toConvert.srcAmount)
+        .pushCall(
+          assembled.transaction.to,
+          BigInt(assembled.transaction.value),
+          assembled.transaction.data,
+        );
+
+      /// assumed to be the last liquidity venue
+      return {
+        src: toConvert.dst,
+        dst: toConvert.dst,
+        srcAmount: 0n,
+      };
+    } catch (error) {
+      throw new Error(
+        `(Odos) Error fetching swap: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  private headers() {
+    const h: Record<string, string> = {
+      accept: "application/json",
+      "content-type": "application/json",
+    };
+    if (this.apiKey) h.Authorization = `Bearer ${this.apiKey}`;
+    return h;
+  }
+
+  private async fetchQuote(p: QuoteRequest): Promise<QuoteResponse> {
+    const res = await fetch(`${ODOS_API_BASE_URL}/sor/quote/v2`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({
+        chainId: p.chainId,
+        inputTokens: [{ tokenAddress: p.src, amount: p.amount.toString() }],
+        outputTokens: [{ tokenAddress: p.dst, proportion: 1 }],
+        userAddr: p.userAddr,
+        slippageLimitPercent: ODOS_SLIPPAGE_PERCENT,
+      }),
+    });
+    if (!res.ok) throw new Error(`quote HTTP ${res.status}: ${await res.text()}`);
+    return (await res.json()) as QuoteResponse;
+  }
+
+  private async fetchAssemble(p: AssembleRequest): Promise<AssembleResponse> {
+    const res = await fetch(`${ODOS_API_BASE_URL}/sor/assemble`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({
+        userAddr: p.userAddr,
+        pathId: p.pathId,
+        simulate: false,
+      }),
+    });
+    if (!res.ok) throw new Error(`assemble HTTP ${res.status}: ${await res.text()}`);
+    return (await res.json()) as AssembleResponse;
+  }
+}

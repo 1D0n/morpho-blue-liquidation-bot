@@ -6,6 +6,7 @@ import { Erc4626 } from "./erc4626";
 import { LiquidityVenue } from "./liquidityVenue";
 import { LiquidSwapVenue } from "./liquidSwap";
 import { MidasVenue } from "./midas";
+import { Odos } from "./odos";
 import { PendlePTVenue } from "./pendlePT";
 import { UniswapV3Venue } from "./uniswapV3";
 import { UniswapV4Venue } from "./uniswapV4";
@@ -33,6 +34,8 @@ export function createLiquidityVenue(liquidityVenueName: LiquidityVenueName): Li
       return new PendlePTVenue();
     case "1inch":
       return new OneInch();
+    case "odos":
+      return new Odos();
     default:
       throw new Error(`Unknown liquidity venue: ${liquidityVenueName}`);
   }
