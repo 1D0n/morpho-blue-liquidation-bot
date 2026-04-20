@@ -259,6 +259,9 @@ export class LiquidationBot {
       args: [calls],
     } as const;
 
+    // Profit lands at `treasuryAddress` (via encoder.erc20Skim earlier); the
+    // signer's balance is unchanged by the tx. Measure the delta at the
+    // treasury so checkProfit stays correct when treasuryAddress !== signer.
     const tSimStart = performance.now();
     const [{ results }, gasPrice] = await Promise.all([
       simulateCalls(this.client, {
@@ -268,14 +271,14 @@ export class LiquidationBot {
             to: marketParams.loanToken,
             abi: erc20Abi,
             functionName: "balanceOf",
-            args: [this.client.account.address],
+            args: [this.treasuryAddress],
           },
           { to: encoder.address, ...functionData },
           {
             to: marketParams.loanToken,
             abi: erc20Abi,
             functionName: "balanceOf",
-            args: [this.client.account.address],
+            args: [this.treasuryAddress],
           },
         ],
       }),
