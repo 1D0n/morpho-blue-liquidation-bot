@@ -466,10 +466,15 @@ export class LiquidationBot {
   private async fetchMarkets() {
     if (!this.marketsFetchingCooldownMechanism.isFetchingReady()) return;
 
-    if (this.vaultWhitelist === "morpho-api")
-      this.vaultWhitelist = await fetchWhitelistedVaults(this.chainId);
+    // Re-resolve on every cooldown cycle when the config asked for dynamic
+    // discovery, so new vaults curated after startup are picked up. Previously
+    // `this.vaultWhitelist` was mutated to a concrete array on first call,
+    // which made dynamic discovery effectively one-shot.
+    const vaultWhitelist =
+      this.vaultWhitelist === "morpho-api"
+        ? await fetchWhitelistedVaults(this.chainId)
+        : this.vaultWhitelist;
 
-    const vaultWhitelist = this.vaultWhitelist;
     console.log(`${this.logTag}📝 Watching markets in the following vaults:`, vaultWhitelist);
 
     const whitelistedMarketsFromVaults = await this.dataProvider.fetchMarkets(
