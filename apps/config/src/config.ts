@@ -56,7 +56,6 @@ export const chainConfigs: Record<number, Config> = {
         "midas",
         "1inch",
         "kyberSwap",
-        "odos",
         "erc20Wrapper",
         "erc4626",
         "uniswapV3",
