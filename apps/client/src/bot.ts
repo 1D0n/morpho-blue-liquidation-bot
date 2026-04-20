@@ -84,6 +84,10 @@ export class LiquidationBot {
     sim_failed: 0,
     not_profitable: 0,
     submitted: 0,
+    odos_ok: 0,
+    odos_timeout_quote: 0,
+    odos_timeout_assemble: 0,
+    odos_error: 0,
   };
 
   constructor(inputs: LiquidationBotInputs) {
@@ -351,12 +355,25 @@ export class LiquidationBot {
           const tConvertStart = performance.now();
           toConvert = await venue.convert(encoder, toConvert);
           const convertMs = performance.now() - tConvertStart;
+          if (venueName === "Odos") this.counters.odos_ok++;
           console.log(
             `${this.logTag}[lat] venue=${venueName} phase=convert supports_ms=${supportsMs.toFixed(0)} convert_ms=${convertMs.toFixed(0)}`,
           );
         }
       } catch (error) {
         const totalMs = performance.now() - tSupportsStart;
+        if (venueName === "Odos" && error instanceof Error) {
+          if (error.message.includes("phase=quote") && error.message.includes("aborted")) {
+            this.counters.odos_timeout_quote++;
+          } else if (
+            error.message.includes("phase=assemble") &&
+            error.message.includes("aborted")
+          ) {
+            this.counters.odos_timeout_assemble++;
+          } else {
+            this.counters.odos_error++;
+          }
+        }
         console.log(`${this.logTag}[lat] venue=${venueName} phase=error ms=${totalMs.toFixed(0)}`);
         console.error(`${this.logTag}Error converting ${toConvert.src} to ${toConvert.dst}`, error);
         continue;

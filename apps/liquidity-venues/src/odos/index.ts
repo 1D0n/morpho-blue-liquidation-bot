@@ -12,10 +12,9 @@ import { ToConvert } from "../types";
 import { AssembleRequest, AssembleResponse, QuoteRequest, QuoteResponse } from "./types";
 
 // Bound Odos's external calls so one slow response can't stall the whole
-// liquidation scan. Quote (route discovery) is the heavy one; assemble is a
-// deterministic calldata build and should return quickly.
+// liquidation scan.
 const QUOTE_TIMEOUT_MS = 4_000;
-const ASSEMBLE_TIMEOUT_MS = 2_000;
+const ASSEMBLE_TIMEOUT_MS = 3_000;
 
 export class Odos implements LiquidityVenue {
   private apiKey: string | undefined;
