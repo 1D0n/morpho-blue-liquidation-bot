@@ -25,6 +25,7 @@ export class Odos implements LiquidityVenue {
 
   async convert(encoder: ExecutorEncoder, toConvert: ToConvert) {
     try {
+      const tQuoteStart = performance.now();
       const quote = await this.fetchQuote({
         chainId: encoder.client.chain.id,
         src: toConvert.src,
@@ -32,11 +33,18 @@ export class Odos implements LiquidityVenue {
         amount: toConvert.srcAmount,
         userAddr: encoder.address,
       });
+      const quoteMs = performance.now() - tQuoteStart;
 
+      const tAssembleStart = performance.now();
       const assembled = await this.fetchAssemble({
         pathId: quote.pathId,
         userAddr: encoder.address,
       });
+      const assembleMs = performance.now() - tAssembleStart;
+
+      console.log(
+        `[odos] chain=${encoder.client.chain.id} quote_ms=${quoteMs.toFixed(0)} assemble_ms=${assembleMs.toFixed(0)} pathId=${quote.pathId.slice(0, 10)}`,
+      );
 
       encoder
         .erc20Approve(toConvert.src, assembled.transaction.to, toConvert.srcAmount)

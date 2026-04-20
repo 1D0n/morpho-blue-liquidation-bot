@@ -78,6 +78,13 @@ export class LiquidationBot {
   private flashbotAccount?: LocalAccount;
   private coveredMarkets: Hex[];
   private alwaysRealizeBadDebt: boolean;
+  private counters = {
+    positions_evaluated: 0,
+    no_route: 0,
+    sim_failed: 0,
+    not_profitable: 0,
+    submitted: 0,
+  };
 
   constructor(inputs: LiquidationBotInputs) {
     this.logTag = inputs.logTag;
@@ -97,6 +104,19 @@ export class LiquidationBot {
     this.flashbotAccount = inputs.flashbotAccount;
     this.coveredMarkets = [];
     this.alwaysRealizeBadDebt = inputs.alwaysRealizeBadDebt;
+
+    // Emit outcome counters every 5 minutes so we get a rolling snapshot of
+    // why positions pass or fail without scraping individual log lines.
+    setInterval(
+      () => {
+        console.log(
+          `${this.logTag}[metrics] ${Object.entries(this.counters)
+            .map(([k, v]) => `${k}=${v}`)
+            .join(" ")}`,
+        );
+      },
+      5 * 60 * 1000,
+    ).unref();
   }
 
   async run() {
@@ -118,6 +138,8 @@ export class LiquidationBot {
 
     if (!this.checkCooldown(MarketUtils.getMarketId(marketParams), position.user)) return;
 
+    this.counters.positions_evaluated++;
+
     const { client, executorAddress } = this;
 
     const encoder = new LiquidationEncoder(executorAddress, client);
@@ -128,8 +150,10 @@ export class LiquidationBot {
         this.decreaseSeizableCollateral(seizableCollateral, badDebtPosition),
         encoder,
       ))
-    )
+    ) {
+      this.counters.no_route++;
       return;
+    }
 
     encoder.erc20Approve(marketParams.loanToken, this.chainAddresses.morpho, maxUint256);
 
@@ -152,16 +176,15 @@ export class LiquidationBot {
     const calls = encoder.flush();
 
     try {
-      const success = await this.handleTx(encoder, calls, marketParams, badDebtPosition);
+      const outcome = await this.handleTx(encoder, calls, marketParams, badDebtPosition);
+      this.counters[outcome]++;
 
-      if (success)
-        console.log(
-          `${this.logTag}Liquidated ${position.user} on ${MarketUtils.getMarketId(marketParams)}`,
-        );
-      else
-        console.log(
-          `${this.logTag}ℹ️ Skipped ${position.user} on ${MarketUtils.getMarketId(marketParams)} (not profitable)`,
-        );
+      const marketId = MarketUtils.getMarketId(marketParams);
+      if (outcome === "submitted")
+        console.log(`${this.logTag}Liquidated ${position.user} on ${marketId}`);
+      else if (outcome === "not_profitable")
+        console.log(`${this.logTag}ℹ️ Skipped ${position.user} on ${marketId} (not profitable)`);
+      // sim_failed already warned inline inside handleTx
     } catch (error) {
       console.error(
         `${this.logTag}Failed to liquidate ${position.user} on ${MarketUtils.getMarketId(marketParams)}`,
@@ -179,11 +202,16 @@ export class LiquidationBot {
 
     if (!this.checkCooldown(MarketUtils.getMarketId(marketParams), position.user)) return;
 
+    this.counters.positions_evaluated++;
+
     const { client, executorAddress } = this;
 
     const encoder = new LiquidationEncoder(executorAddress, client);
 
-    if (!(await this.convertCollateralToLoan(marketParams, seizableCollateral, encoder))) return;
+    if (!(await this.convertCollateralToLoan(marketParams, seizableCollateral, encoder))) {
+      this.counters.no_route++;
+      return;
+    }
 
     encoder.erc20Approve(marketParams.loanToken, position.preLiquidation, maxUint256);
 
@@ -199,16 +227,14 @@ export class LiquidationBot {
     const calls = encoder.flush();
 
     try {
-      const success = await this.handleTx(encoder, calls, marketParams, false);
+      const outcome = await this.handleTx(encoder, calls, marketParams, false);
+      this.counters[outcome]++;
 
-      if (success)
-        console.log(
-          `${this.logTag}Pre-liquidated ${position.user} on ${MarketUtils.getMarketId(marketParams)}`,
-        );
-      else
-        console.log(
-          `${this.logTag}ℹ️ Skipped ${position.user} on ${MarketUtils.getMarketId(marketParams)} (not profitable)`,
-        );
+      const marketId = MarketUtils.getMarketId(marketParams);
+      if (outcome === "submitted")
+        console.log(`${this.logTag}Pre-liquidated ${position.user} on ${marketId}`);
+      else if (outcome === "not_profitable")
+        console.log(`${this.logTag}ℹ️ Skipped ${position.user} on ${marketId} (not profitable)`);
     } catch (error) {
       console.error(
         `${this.logTag}Failed to pre-liquidate ${position.user} on ${MarketUtils.getMarketId(marketParams)}`,
@@ -222,13 +248,14 @@ export class LiquidationBot {
     calls: Hex[],
     marketParams: IMarketParams,
     badDebtPosition: boolean,
-  ) {
+  ): Promise<"sim_failed" | "not_profitable" | "submitted"> {
     const functionData = {
       abi: executorAbi,
       functionName: "exec_606BaXt",
       args: [calls],
     } as const;
 
+    const tSimStart = performance.now();
     const [{ results }, gasPrice] = await Promise.all([
       simulateCalls(this.client, {
         account: this.client.account.address,
@@ -250,10 +277,12 @@ export class LiquidationBot {
       }),
       getGasPrice(this.client),
     ]);
+    const simMs = performance.now() - tSimStart;
+    console.log(`${this.logTag}[lat] phase=simulate ms=${simMs.toFixed(0)}`);
 
     if (results[1].status !== "success") {
       console.warn(`${this.logTag}Transaction failed in simulation: ${results[1].error}`);
-      return;
+      return "sim_failed";
     }
 
     if (
@@ -270,10 +299,11 @@ export class LiquidationBot {
         badDebtPosition,
       ))
     )
-      return false;
+      return "not_profitable";
 
     // TX EXECUTION
 
+    const tSubmitStart = performance.now();
     if (this.flashbotAccount) {
       const signedBundle = await Flashbots.signBundle([
         {
@@ -287,12 +317,13 @@ export class LiquidationBot {
         (await getBlockNumber(this.client)) + 1n,
         this.flashbotAccount,
       );
-      return true;
     } else {
       await writeContract(this.client, { address: encoder.address, ...functionData });
     }
+    const submitMs = performance.now() - tSubmitStart;
+    console.log(`${this.logTag}[lat] phase=submit ms=${submitMs.toFixed(0)}`);
 
-    return true;
+    return "submitted";
   }
 
   private async convertCollateralToLoan(
@@ -307,10 +338,26 @@ export class LiquidationBot {
     };
 
     for (const venue of this.liquidityVenues) {
+      const venueName = venue.constructor.name;
+      const tSupportsStart = performance.now();
       try {
-        if (await venue.supportsRoute(encoder, toConvert.src, toConvert.dst))
+        const supports = await venue.supportsRoute(encoder, toConvert.src, toConvert.dst);
+        const supportsMs = performance.now() - tSupportsStart;
+        if (!supports) {
+          console.log(
+            `${this.logTag}[lat] venue=${venueName} phase=supports ms=${supportsMs.toFixed(0)} result=skip`,
+          );
+        } else {
+          const tConvertStart = performance.now();
           toConvert = await venue.convert(encoder, toConvert);
+          const convertMs = performance.now() - tConvertStart;
+          console.log(
+            `${this.logTag}[lat] venue=${venueName} phase=convert supports_ms=${supportsMs.toFixed(0)} convert_ms=${convertMs.toFixed(0)}`,
+          );
+        }
       } catch (error) {
+        const totalMs = performance.now() - tSupportsStart;
+        console.log(`${this.logTag}[lat] venue=${venueName} phase=error ms=${totalMs.toFixed(0)}`);
         console.error(`${this.logTag}Error converting ${toConvert.src} to ${toConvert.dst}`, error);
         continue;
       }
