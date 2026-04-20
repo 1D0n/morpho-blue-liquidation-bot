@@ -33,6 +33,7 @@ import {
   writeContract,
 } from "viem/actions";
 
+import { getHealthState } from "./health";
 import {
   MarketsFetchingCooldownMechanism,
   PositionLiquidationCooldownMechanism,
@@ -145,6 +146,10 @@ export class LiquidationBot {
         ...liquidatablePositions.map((position) => this.liquidate(position)),
         ...preLiquidatablePositions.map((position) => this.preLiquidate(position)),
       ]);
+      getHealthState().markRunOk(this.chainId);
+    } catch (err) {
+      getHealthState().markRunError(this.chainId);
+      throw err;
     } finally {
       this.running = false;
     }

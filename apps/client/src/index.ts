@@ -13,6 +13,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import { watchBlocks } from "viem/actions";
 
 import { LiquidationBot, type LiquidationBotInputs } from "./bot";
+import { getHealthState } from "./health";
 import {
   MarketsFetchingCooldownMechanism,
   PositionLiquidationCooldownMechanism,
@@ -89,6 +90,7 @@ export const launchBot = (config: ChainConfig, dataProvider: DataProvider) => {
   };
 
   const bot = new LiquidationBot(inputs);
+  getHealthState().markLaunched(config.chainId);
 
   const blockInterval = config.blockInterval ?? 1;
   let count = 0;
