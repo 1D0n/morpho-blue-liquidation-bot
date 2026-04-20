@@ -1,13 +1,19 @@
-import { DEPLOYMENTS } from "@morpho-blue-liquidation-bot/config";
+import {
+  DEPLOYMENTS,
+  UNISWAP_V4_DEFAULT_POOL_KEY_PROBES,
+  UNISWAP_V4_POOL_KEY_PROBES,
+  type UniswapV4PoolKeyProbe,
+} from "@morpho-blue-liquidation-bot/config";
 import { CommandType, RoutePlanner } from "@uniswap/universal-router-sdk";
 import { Actions, type PoolKey, V4Planner } from "@uniswap/v4-sdk";
 import type { ExecutorEncoder } from "executooor-viem";
 import {
   type Address,
+  encodeAbiParameters,
   encodeFunctionData,
   erc20Abi,
-  type GetContractEventsReturnType,
   type Hex,
+  keccak256,
   maxUint256,
   maxUint48,
   type ValueOf,
@@ -24,17 +30,46 @@ import {
 import type { LiquidityVenue } from "../liquidityVenue";
 import type { ToConvert } from "../types";
 
+interface PoolKeyData {
+  id: Hex;
+  fee: number;
+  tickSpacing: number;
+  hooks: Address;
+}
+
+const POOL_KEY_ABI_PARAMS = [
+  {
+    type: "tuple",
+    components: [
+      { name: "currency0", type: "address" },
+      { name: "currency1", type: "address" },
+      { name: "fee", type: "uint24" },
+      { name: "tickSpacing", type: "int24" },
+      { name: "hooks", type: "address" },
+    ],
+  },
+] as const;
+
+function computePoolId(
+  currency0: Address,
+  currency1: Address,
+  fee: number,
+  tickSpacing: number,
+  hooks: Address,
+): Hex {
+  return keccak256(
+    encodeAbiParameters(POOL_KEY_ABI_PARAMS, [{ currency0, currency1, fee, tickSpacing, hooks }]),
+  );
+}
+
 export class UniswapV4Venue implements LiquidityVenue {
   private STALE_TIME = 60 * 60 * 1000; // 1 hour
-  private poolCreationEventsCache: Record<
-    Hex,
-    {
-      events: Awaited<
-        GetContractEventsReturnType<typeof uniswapV4PoolManagerAbi, "Initialize", true>
-      >;
-      lastUpdate: number;
-    }
-  > = {};
+  /**
+   * Single per-pair pool cache used by both discovery paths. Keyed by
+   * `${currency0}${currency1}` (ordered numerically, same convention as the
+   * fetchPools caller).
+   */
+  private poolsCache: Record<Hex, { pools: PoolKeyData[]; lastUpdate: number }> = {};
 
   supportsRoute(
     encoder: ExecutorEncoder,
@@ -195,33 +230,47 @@ export class UniswapV4Venue implements LiquidityVenue {
   ) {
     // Each pool's currencies are always sorted numerically.
     const [currency0, currency1] = BigInt(src) < BigInt(dst) ? [src, dst] : [dst, src];
+    const cacheKey = `${currency0}${currency1}` as Hex;
 
-    const cache = this.poolCreationEventsCache[`${currency0}${currency1}`];
-    const cacheIsValid = cache?.lastUpdate && Date.now() - cache.lastUpdate < this.STALE_TIME;
+    const cache = this.poolsCache[cacheKey];
+    if (cache && Date.now() - cache.lastUpdate < this.STALE_TIME) {
+      return { currency0, currency1, pools: cache.pools };
+    }
 
+    // Fast path: probe the standard (fee, tickSpacing, hooks) tuples via a
+    // single multicall of `StateView.getLiquidity`. Pools with zero liquidity
+    // are filtered out — they can't be swapped through anyway.
     try {
-      const poolCreationEvents = cacheIsValid
-        ? cache.events
-        : await getContractEvents(encoder.client, {
-            ...poolManager,
-            abi: uniswapV4PoolManagerAbi,
-            eventName: "Initialize",
-            args: { currency0, currency1 },
-            strict: true,
-          });
-
-      if (!cacheIsValid) {
-        this.poolCreationEventsCache[`${currency0}${currency1}`] = {
-          events: poolCreationEvents,
-          lastUpdate: Date.now(),
-        };
+      const fastPools = await this.fastProbePools(encoder, currency0, currency1);
+      if (fastPools.length > 0) {
+        this.poolsCache[cacheKey] = { pools: fastPools, lastUpdate: Date.now() };
+        return { currency0, currency1, pools: fastPools };
       }
+    } catch (error) {
+      // Fast path failing should not block the slow-path fallback; just log.
+      console.warn(
+        `(UniswapV4) Fast pool probe failed, falling back to event scan: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
 
-      // Ignore pools with hooks, as we don't know what extra data they'd require for swaps.
-      const pools = poolCreationEvents
+    // Slow path: discover any hookless Initialize event for the pair.
+    try {
+      const events = await getContractEvents(encoder.client, {
+        ...poolManager,
+        abi: uniswapV4PoolManagerAbi,
+        eventName: "Initialize",
+        args: { currency0, currency1 },
+        strict: true,
+      });
+      const pools: PoolKeyData[] = events
         .filter((ev) => ev.args.hooks === zeroAddress)
-        .map((ev) => ev.args);
-
+        .map((ev) => ({
+          id: ev.args.id,
+          fee: Number(ev.args.fee),
+          tickSpacing: Number(ev.args.tickSpacing),
+          hooks: ev.args.hooks,
+        }));
+      this.poolsCache[cacheKey] = { pools, lastUpdate: Date.now() };
       return { currency0, currency1, pools };
     } catch (error) {
       throw new Error(
@@ -229,4 +278,45 @@ export class UniswapV4Venue implements LiquidityVenue {
       );
     }
   }
+
+  private async fastProbePools(
+    encoder: ExecutorEncoder,
+    currency0: Address,
+    currency1: Address,
+  ): Promise<PoolKeyData[]> {
+    const chainId = encoder.client.chain.id;
+    const deployments = DEPLOYMENTS[chainId];
+    if (!deployments) return [];
+    const probes = UNISWAP_V4_POOL_KEY_PROBES[chainId] ?? UNISWAP_V4_DEFAULT_POOL_KEY_PROBES;
+
+    const candidates = probes.map((probe) => ({
+      ...probe,
+      id: computePoolId(currency0, currency1, probe.fee, probe.tickSpacing, probe.hooks),
+    }));
+
+    const results = await multicall(encoder.client, {
+      contracts: candidates.map((c) => ({
+        ...deployments.StateView,
+        abi: uniswapV4StateViewAbi,
+        functionName: "getLiquidity" as const,
+        args: [c.id],
+      })),
+      allowFailure: true,
+      batchSize: 2 ** 16,
+    });
+
+    const live: PoolKeyData[] = [];
+    for (let i = 0; i < candidates.length; i += 1) {
+      const r = results[i];
+      if (!r || r.status !== "success") continue;
+      if (r.result > 0n) {
+        const c = candidates[i]!;
+        live.push({ id: c.id, fee: c.fee, tickSpacing: c.tickSpacing, hooks: c.hooks });
+      }
+    }
+    return live;
+  }
 }
+
+// Keep an exported type referenced by consumers if they ever want to iterate.
+export type { UniswapV4PoolKeyProbe };

@@ -1,4 +1,5 @@
 import type { Address } from "viem";
+import { zeroAddress } from "viem";
 import {
   arbitrum,
   avalanche,
@@ -18,6 +19,31 @@ import {
 import { monad } from "../chains";
 
 type Contracts = "PoolManager" | "Quoter" | "StateView" | "UniversalRouter" | "Permit2" | "Native";
+
+/**
+ * Hookless `(fee, tickSpacing)` tuples probed on the fast path in the V4
+ * venue before falling back to the `Initialize` event scan. Each tuple here
+ * becomes a deterministic poolId lookup; the slow path still recovers pools
+ * outside this set.
+ */
+export interface UniswapV4PoolKeyProbe {
+  fee: number;
+  tickSpacing: number;
+  hooks: Address;
+}
+
+export const UNISWAP_V4_DEFAULT_POOL_KEY_PROBES: UniswapV4PoolKeyProbe[] = [
+  { fee: 100, tickSpacing: 1, hooks: zeroAddress },
+  { fee: 500, tickSpacing: 10, hooks: zeroAddress },
+  { fee: 3_000, tickSpacing: 60, hooks: zeroAddress },
+  { fee: 10_000, tickSpacing: 200, hooks: zeroAddress },
+];
+
+/**
+ * Optional per-chain override. If a chain isn't present, the venue uses
+ * `UNISWAP_V4_DEFAULT_POOL_KEY_PROBES`.
+ */
+export const UNISWAP_V4_POOL_KEY_PROBES: Record<number, UniswapV4PoolKeyProbe[]> = {};
 
 export const DEPLOYMENTS: Record<
   number,
