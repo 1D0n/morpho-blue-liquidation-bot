@@ -3,6 +3,7 @@ import type { LiquidityVenueName } from "@morpho-blue-liquidation-bot/config";
 import { OneInch } from "./1inch";
 import { Erc20Wrapper } from "./erc20Wrapper";
 import { Erc4626 } from "./erc4626";
+import { KyberSwap } from "./kyberSwap";
 import { LiquidityVenue } from "./liquidityVenue";
 import { LiquidSwapVenue } from "./liquidSwap";
 import { MidasVenue } from "./midas";
@@ -36,6 +37,8 @@ export function createLiquidityVenue(liquidityVenueName: LiquidityVenueName): Li
       return new OneInch();
     case "odos":
       return new Odos();
+    case "kyberSwap":
+      return new KyberSwap();
     default:
       throw new Error(`Unknown liquidity venue: ${liquidityVenueName}`);
   }

@@ -4,6 +4,7 @@ export * from "./erc4626";
 export * from "./erc20Wrapper";
 export * from "./liquidSwap";
 export * from "./1inch";
+export * from "./kyberSwap";
 export * from "./odos";
 export * from "./pendlePT";
 export * from "./midas";
