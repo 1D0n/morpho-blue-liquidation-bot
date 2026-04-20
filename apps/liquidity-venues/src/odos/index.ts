@@ -9,7 +9,11 @@ import { Address } from "viem";
 import { LiquidityVenue } from "../liquidityVenue";
 import { ToConvert } from "../types";
 
+import { OdosError } from "./errors";
 import { AssembleRequest, AssembleResponse, QuoteRequest, QuoteResponse } from "./types";
+
+export { OdosError } from "./errors";
+export type { OdosErrorKind, OdosPhase } from "./errors";
 
 // Bound Odos's external calls so one slow response can't stall the whole
 // liquidation scan.
@@ -71,12 +75,11 @@ export class Odos implements LiquidityVenue {
     } catch (error) {
       const phase = quoteMs === 0 ? "quote" : "assemble";
       const kind = error instanceof Error && error.name === "AbortError" ? "timeout" : "error";
+      const errMsg = error instanceof Error ? error.message : String(error);
       console.warn(
-        `[odos] chain=${encoder.client.chain.id} status=${kind} phase=${phase} quote_ms=${quoteMs.toFixed(0)} assemble_ms=${assembleMs.toFixed(0)} err=${error instanceof Error ? error.message : String(error)}`,
+        `[odos] chain=${encoder.client.chain.id} status=${kind} phase=${phase} quote_ms=${quoteMs.toFixed(0)} assemble_ms=${assembleMs.toFixed(0)} err=${errMsg}`,
       );
-      throw new Error(
-        `(Odos) Error fetching swap (phase=${phase}): ${error instanceof Error ? error.message : String(error)}`,
-      );
+      throw new OdosError(phase, kind, `(Odos) fetch failed (phase=${phase}): ${errMsg}`, error);
     }
   }
 

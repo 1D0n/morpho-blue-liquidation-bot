@@ -1,6 +1,6 @@
 import { chainConfigs } from "@morpho-blue-liquidation-bot/config";
 import type { DataProvider } from "@morpho-blue-liquidation-bot/data-providers";
-import type { LiquidityVenue } from "@morpho-blue-liquidation-bot/liquidity-venues";
+import { type LiquidityVenue, OdosError } from "@morpho-blue-liquidation-bot/liquidity-venues";
 import type { Pricer } from "@morpho-blue-liquidation-bot/pricers";
 import {
   AccrualPosition,
@@ -362,15 +362,15 @@ export class LiquidationBot {
         }
       } catch (error) {
         const totalMs = performance.now() - tSupportsStart;
-        if (venueName === "Odos" && error instanceof Error) {
-          if (error.message.includes("phase=quote") && error.message.includes("aborted")) {
-            this.counters.odos_timeout_quote++;
-          } else if (
-            error.message.includes("phase=assemble") &&
-            error.message.includes("aborted")
-          ) {
-            this.counters.odos_timeout_assemble++;
+        if (venueName === "Odos") {
+          if (error instanceof OdosError) {
+            if (error.kind === "timeout" && error.phase === "quote")
+              this.counters.odos_timeout_quote++;
+            else if (error.kind === "timeout" && error.phase === "assemble")
+              this.counters.odos_timeout_assemble++;
+            else this.counters.odos_error++;
           } else {
+            // Something unexpected — still record so the bucket count matches odos_ok.
             this.counters.odos_error++;
           }
         }
