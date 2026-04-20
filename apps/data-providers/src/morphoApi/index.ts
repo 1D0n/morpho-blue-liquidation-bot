@@ -29,31 +29,48 @@ export class MorphoApiDataProvider implements DataProvider {
   ): Promise<LiquidatablePositionsResult> {
     try {
       const PAGE_SIZE = 100;
-      const MARKET_BATCH_SIZE = 100;
+      // Previously 100; a 79-market batch was empirically causing repeated 504
+      // timeouts from the Morpho GraphQL endpoint and silently dropping scans.
+      // 20 fits well under whatever the server's processing-time ceiling is.
+      const MARKET_BATCH_SIZE = 20;
       const allPositions: NonNullable<
         Awaited<ReturnType<typeof apiSdk.getLiquidatablePositions>>["marketPositions"]["items"]
       > = [];
 
-      // Batch market IDs into chunks of 100 (API limit)
+      // Batch market IDs into smaller chunks to stay under the API's timeout.
       for (let i = 0; i < marketIds.length; i += MARKET_BATCH_SIZE) {
         const marketIdsBatch = marketIds.slice(i, i + MARKET_BATCH_SIZE);
 
         let skip = 0;
-        while (true) {
-          const positionsQuery = await apiSdk.getLiquidatablePositions({
-            chainId: client.chain.id,
-            marketIds: marketIdsBatch,
-            skip,
-            first: PAGE_SIZE,
-          });
+        try {
+          while (true) {
+            const positionsQuery = await this.withRetry(
+              () =>
+                apiSdk.getLiquidatablePositions({
+                  chainId: client.chain.id,
+                  marketIds: marketIdsBatch,
+                  skip,
+                  first: PAGE_SIZE,
+                }),
+              { attempts: 3, baseDelayMs: 250, chainId: client.chain.id },
+            );
 
-          const items = positionsQuery.marketPositions.items;
-          if (!items || items.length === 0) break;
+            const items = positionsQuery.marketPositions.items;
+            if (!items || items.length === 0) break;
 
-          allPositions.push(...items);
+            allPositions.push(...items);
 
-          if (items.length < PAGE_SIZE) break;
-          skip += PAGE_SIZE;
+            if (items.length < PAGE_SIZE) break;
+            skip += PAGE_SIZE;
+          }
+        } catch (error) {
+          // Per-batch failure after retries: degrade gracefully by skipping the
+          // batch instead of aborting the whole scan. Other batches may still
+          // surface liquidatable positions.
+          console.warn(
+            `[Chain ${client.chain.id}] fetchLiquidatablePositions batch ${i}-${i + marketIdsBatch.length - 1} failed after retries, skipping: ${error instanceof Error ? error.message : String(error)}`,
+          );
+          continue;
         }
       }
 
@@ -125,6 +142,27 @@ export class MorphoApiDataProvider implements DataProvider {
       console.error(`[Chain ${client.chain.id}] Error fetching liquidatable positions:`, error);
       return { liquidatablePositions: [], preLiquidatablePositions: [] };
     }
+  }
+
+  private async withRetry<T>(
+    fn: () => Promise<T>,
+    opts: { attempts: number; baseDelayMs: number; chainId: number },
+  ): Promise<T> {
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= opts.attempts; attempt++) {
+      try {
+        return await fn();
+      } catch (error) {
+        lastError = error;
+        if (attempt === opts.attempts) break;
+        const delay = opts.baseDelayMs * 2 ** (attempt - 1);
+        console.warn(
+          `[Chain ${opts.chainId}] fetchLiquidatablePositions attempt ${attempt}/${opts.attempts} failed (${error instanceof Error ? error.message.slice(0, 80) : String(error).slice(0, 80)}), retrying in ${delay}ms`,
+        );
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+    }
+    throw lastError;
   }
 
   private async fetchVaultMarkets(
