@@ -8,7 +8,7 @@ import {
 import type { DataProvider } from "@morpho-blue-liquidation-bot/data-providers";
 import { createLiquidityVenue } from "@morpho-blue-liquidation-bot/liquidity-venues";
 import { createPricer } from "@morpho-blue-liquidation-bot/pricers";
-import { createWalletClient, Hex, http } from "viem";
+import { createWalletClient, fallback, Hex, http, webSocket } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { watchBlocks } from "viem/actions";
 
@@ -22,9 +22,17 @@ export const launchBot = (config: ChainConfig, dataProvider: DataProvider) => {
   const logTag = `[${config.chain.name} client]: `;
   console.log(`${logTag}Starting up`);
 
+  // When a WS endpoint is configured, prefer it for push-based block
+  // subscriptions (cutting detection latency from ~4s polling to <100ms).
+  // HTTP stays in the fallback chain so one-shot RPCs still work if the WS
+  // connection drops.
+  const transport = config.wsRpcUrl
+    ? fallback([webSocket(config.wsRpcUrl), http(config.rpcUrl)])
+    : http(config.rpcUrl);
+
   const client = createWalletClient({
     chain: config.chain,
-    transport: http(config.rpcUrl),
+    transport,
     account: privateKeyToAccount(config.liquidationPrivateKey),
   });
 
@@ -89,7 +97,7 @@ export const launchBot = (config: ChainConfig, dataProvider: DataProvider) => {
     watchBlocks(client, {
       onBlock: () => {
         if (count % blockInterval === 0) {
-          bot.run().catch((e) => {
+          bot.run().catch((e: unknown) => {
             console.error(`${logTag} uncaught error in bot.run():`, e);
           });
         }
@@ -97,10 +105,7 @@ export const launchBot = (config: ChainConfig, dataProvider: DataProvider) => {
       },
       onError: (error) => {
         const retryDelay = config.watchBlocksRetryDelayMs ?? 5_000;
-        console.error(
-          `${logTag} watchBlocks error, restarting watcher in ${retryDelay}ms:`,
-          error,
-        );
+        console.error(`${logTag} watchBlocks error, restarting watcher in ${retryDelay}ms:`, error);
         setTimeout(startWatching, retryDelay);
       },
     });

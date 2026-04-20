@@ -64,7 +64,6 @@ export const chainConfigs: Record<number, Config> = {
       pricers: ["defillama", "chainlink", "uniswapV3"],
       liquidationBufferBps: 50,
       useFlashbots: false,
-      blockInterval: 10,
     },
   },
   [unichain.id]: {
