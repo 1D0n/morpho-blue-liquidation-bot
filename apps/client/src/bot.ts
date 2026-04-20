@@ -78,12 +78,14 @@ export class LiquidationBot {
   private flashbotAccount?: LocalAccount;
   private coveredMarkets: Hex[];
   private alwaysRealizeBadDebt: boolean;
+  private running = false;
   private counters = {
     positions_evaluated: 0,
     no_route: 0,
     sim_failed: 0,
     not_profitable: 0,
     submitted: 0,
+    scans_skipped_overlap: 0,
     odos_ok: 0,
     odos_timeout_quote: 0,
     odos_timeout_assemble: 0,
@@ -124,15 +126,28 @@ export class LiquidationBot {
   }
 
   async run() {
-    await this.fetchMarkets();
+    // Drop overlapping scans. watchBlocks fires bot.run on every block, and
+    // a slow fetch / venue / simulate can easily exceed a block interval.
+    // Running scans concurrently would duplicate work, risk nonce collisions
+    // from concurrent writeContract calls, and inflate upstream RPC load.
+    if (this.running) {
+      this.counters.scans_skipped_overlap++;
+      return;
+    }
+    this.running = true;
+    try {
+      await this.fetchMarkets();
 
-    const { liquidatablePositions, preLiquidatablePositions } =
-      await this.dataProvider.fetchLiquidatablePositions(this.client, this.coveredMarkets);
+      const { liquidatablePositions, preLiquidatablePositions } =
+        await this.dataProvider.fetchLiquidatablePositions(this.client, this.coveredMarkets);
 
-    await Promise.all([
-      ...liquidatablePositions.map((position) => this.liquidate(position)),
-      ...preLiquidatablePositions.map((position) => this.preLiquidate(position)),
-    ]);
+      await Promise.all([
+        ...liquidatablePositions.map((position) => this.liquidate(position)),
+        ...preLiquidatablePositions.map((position) => this.preLiquidate(position)),
+      ]);
+    } finally {
+      this.running = false;
+    }
   }
 
   private async liquidate(position: AccrualPosition) {
