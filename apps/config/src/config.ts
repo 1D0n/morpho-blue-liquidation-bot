@@ -49,7 +49,15 @@ export const chainConfigs: Record<number, Config> = {
     wNative: "0x4200000000000000000000000000000000000006",
     options: {
       dataProvider: "morphoApi",
-      vaultWhitelist: ["0xbeeF010f9cb27031ad51e3333f9aF9C6B1228183"],
+      vaultWhitelist: [
+        "0xbeeF010f9cb27031ad51e3333f9aF9C6B1228183", // Steakhouse USDC
+        "0xBEEFE94c8aD530842bfE7d8B397938fFc1cb83b2", // Steakhouse Prime USDC
+        "0xeE8F4eC5672F09119b96Ab6fB59C27E1b7e44b61", // Gauntlet USDC Prime
+        "0xa0E430870c4604CcfC7B38Ca7845B1FF653D0ff1", // Moonwell Flagship ETH
+        "0x7BfA7C4f149E7415b73bdeDfe609237e29CBF34A", // Spark USDC
+        "0xc1256Ae5FF1cf2719D4937adb3bbCCab2E00A2Ca", // Moonwell Flagship USDC
+        "0x543257eF2161176D7C8cD90BA65C2d4CaEF5a796", // Moonwell Frontier cbBTC
+      ],
       additionalMarketsWhitelist: [],
       liquidityVenues: [
         "pendlePT",
